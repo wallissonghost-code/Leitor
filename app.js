@@ -38,12 +38,19 @@ async function saveLocalCapture(blob){try{const db=await new Promise((ok,no)=>{c
 async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='CAPTURANDO';setStatus('Capturando foto');try{
  const max=2600,scale=Math.min(1,max/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const ctx=canvas.getContext('2d');ctx.drawImage(video,0,0,canvas.width,canvas.height);
  const blob=await new Promise(ok=>canvas.toBlob(ok,'image/jpeg',.94));snapshot.src=URL.createObjectURL(blob);snapshot.hidden=false;video.hidden=true;$('#captureInfo').hidden=false;$('#captureTime').textContent='Capturada em '+new Date().toLocaleString('pt-BR');await saveLocalCapture(blob);ocrState.textContent='LENDO...';setStatus('Localizando destinatário');
- const full=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*55)+'%'}});
+ const full=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*45)+'%'}});
  let text=full.data.text||'',cropText='';
  const words=full.data.words||[];const marker=words.find(w=>/destinat/i.test(w.text||''));
- if(marker&&marker.bbox){const y0=Math.max(0,marker.bbox.y0-25),h=Math.min(canvas.height-y0,Math.max(280,canvas.height*.28));const crop=document.createElement('canvas');crop.width=canvas.width;crop.height=h;crop.getContext('2d').drawImage(canvas,0,y0,canvas.width,h,0,0,canvas.width,h);const focused=await Tesseract.recognize(crop,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=55+Math.round((m.progress||0)*45)+'%'}});cropText=focused.data.text||''}
- const p=parseLabel(cropText&&/destinat/i.test(cropText)?cropText:text);
- $('#recipient').textContent=p.recipient;$('#address').textContent=p.address;$('#district').textContent=p.district;$('#city').textContent=p.city;$('#cep').textContent=p.cep;$('#rawText').textContent=(cropText||text)||'Nenhum texto reconhecido.';
- ocrState.textContent='CONCLUÍDO';setStatus('Destinatário lido')
+ const crop=document.createElement('canvas');crop.width=canvas.width;
+ let y0=0,h=Math.round(canvas.height*.38);
+ if(marker&&marker.bbox){y0=Math.max(0,marker.bbox.y0-35);h=Math.min(canvas.height-y0,Math.max(320,canvas.height*.30))}
+ crop.height=h;const cctx=crop.getContext('2d');cctx.drawImage(canvas,0,y0,canvas.width,h,0,0,canvas.width,h);
+ const focused=await Tesseract.recognize(crop,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=45+Math.round((m.progress||0)*55)+'%'}});
+ cropText=focused.data.text||'';
+ let p=parseLabel(cropText);const score=x=>[x.recipient,x.address,x.district,x.city,x.cep].filter(v=>v&&v!=='—').length;
+ const fullParsed=parseLabel(text);if(score(fullParsed)>score(p))p=fullParsed;
+ $('#recipient').textContent=p.recipient;$('#address').textContent=p.address;$('#district').textContent=p.district;$('#city').textContent=p.city;$('#cep').textContent=p.cep;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
+ const found=[p.recipient,p.address,p.district,p.city,p.cep].filter(v=>v&&v!=='—').length;
+ if(found){ocrState.textContent='CONCLUÍDO';setStatus('Destinatário lido')}else{ocrState.textContent='NÃO IDENTIFICADO';setStatus('Tente aproximar a etiqueta')}
  }catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer o destinatário. Tente enquadrar a etiqueta inteira, com boa luz e a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
 start.onclick=async()=>{snapshot.hidden=true;video.hidden=false;await begin()};stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
