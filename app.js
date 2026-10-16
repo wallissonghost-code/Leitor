@@ -6,12 +6,33 @@ async function begin(){try{if(!navigator.mediaDevices?.getUserMedia)throw Error(
 async function nativeScan(){if(!running)return;try{const c=await nativeDetector.detect(video);if(c.length)showResult(c[0].rawValue,c[0].format||'código')}catch(e){}raf=requestAnimationFrame(nativeScan)}
 function end(){running=false;if(raf)cancelAnimationFrame(raf);raf=0;if(zxingReader){try{zxingReader.reset()}catch(e){}zxingReader=null}if(stream)stream.getTracks().forEach(t=>t.stop());if(video.srcObject){try{video.srcObject.getTracks().forEach(t=>t.stop())}catch(e){}}video.srcObject=null;stream=null;nativeDetector=null;start.disabled=false;stop.disabled=true;ocr.disabled=true;if(!ocrBusy)setStatus('Pronto')}
 function clean(s){return(s||'').replace(/[|]/g,'I').replace(/\s+/g,' ').trim()}
-function parseLabel(text){const lines=text.split(/\n+/).map(clean).filter(x=>x.length>2);const all=lines.join('\n');const cep=(all.match(/\b\d{5}[-.]?\d{3}\b/)||[])[0]||'—';let recipient='—',address='—',district='—',city='—';
- const dest=lines.findIndex(l=>/destinat[aá]rio/i.test(l));if(dest>=0){const same=lines[dest].replace(/.*destinat[aá]rio\s*[:\-]?/i,'').trim();recipient=same.length>3?same:(lines[dest+1]||'—')}
- const streetRx=/\b(rua|r\.?|avenida|av\.?|travessa|alameda|rodovia|estrada|pra[cç]a)\b/i;const ai=lines.findIndex(l=>streetRx.test(l));if(ai>=0)address=lines[ai];
- const bi=lines.findIndex(l=>/bairro\s*[:\-]/i.test(l));if(bi>=0)district=lines[bi].replace(/.*bairro\s*[:\-]?/i,'').trim()||'—';else if(ai>=0&&lines[ai+1]&&!/cep/i.test(lines[ai+1]))district=lines[ai+1];
- const ci=lines.findIndex(l=>/\b[A-ZÀ-Ú][A-Za-zÀ-ú .'-]+\s*[-/]\s*[A-Z]{2}\b/.test(l));if(ci>=0)city=lines[ci];
- if(recipient==='—'&&dest>=0)recipient=lines.slice(dest+1,dest+3).find(l=>!streetRx.test(l))||'—';
- const ceps=[...all.matchAll(/\b\d{5}[-.]?\d{3}\b/g)].map(m=>m[0]);const tracking=(all.match(/\b[A-Z]{2}\d{9,14}[A-Z]{0,2}\b/i)||[])[0]||lastValue||'—';let sender='—';const si=lines.findIndex(l=>/remetente/i.test(l));if(si>=0)sender=lines[si+1]||'—';const nf=(all.match(/\bNF\s*[:#-]?\s*(\d{3,12})/i)||[])[1]||'—';const series=(all.match(/s[eé]rie\s*[:#-]?\s*([A-Z0-9.-]+)/i)||[])[1]||'—';const longDigits=(all.replace(/[ .-]/g,' ').match(/\b\d{30,50}\b/g)||[]).sort((a,b)=>b.length-a.length)[0]||'—';const sku=(all.match(/\bSKU\s*[:#-]?\s*([^\n]+)/i)||[])[1]||'—';const issue=(all.match(/emiss[aã]o\s*[:#-]?\s*([^\n]+)/i)||[])[1]||'—';const forecast=(all.match(/envio\s+previsto\s*[:#-]?\s*([^\n]+)/i)||[])[1]||'—';return{recipient,address,district,city,cep,tracking,sender,senderCep:ceps.length>1?ceps[ceps.length-1]:'—',nf,series,danfe:longDigits,sku,issue,forecast,raw:all}}
+function parseLabel(text){
+ const lines=text.split(/\n+/).map(clean).filter(x=>x.length>2),all=lines.join('\n');
+ const streetRx=/\b(rua|avenida|av\.?|travessa|alameda|rodovia|estrada|pra[cç]a)\b/i;
+ const isHeader=l=>/^(destinat[aá]rio|remetente|corredor|gaiola|coleta|danfe|sku|nf\b|s[eé]rie\b|emiss[aã]o)/i.test(l);
+ const dest=lines.findIndex(l=>/destinat[aá]rio/i.test(l)),rem=lines.findIndex(l=>/remetente/i.test(l));
+ let recipient='—',address='—',district='—',city='—',cep='—',sender='—',senderCep='—';
+ if(dest>=0){
+  let block=[];for(let i=dest+1;i<Math.min(lines.length,dest+9);i++){if(i!==dest+1&&isHeader(lines[i]))break;block.push(lines[i])}
+  recipient=block[0]||'—';
+  const bi=block.findIndex(l=>/bairro\s*[:\-]?/i.test(l)),ci=block.findIndex(l=>/\b(?:SP|RJ|MG|ES|PR|SC|RS|BA|PE|CE|GO|DF|PA|AM|MT|MS|MA|PB|RN|AL|SE|PI|RO|RR|AC|AP|TO)\b/i.test(l));
+  if(bi>=0)district=block[bi].replace(/.*bairro\s*[:\-]?/i,'').trim()||'—';
+  const addrLines=block.slice(1,bi>=0?bi:(ci>=0?ci:block.length)).filter(l=>!/^cep\b/i.test(l)&&!/\b\d{2}\/\d{2}\/\d{4}\b/.test(l));
+  if(addrLines.length)address=addrLines.join(', ');
+  if(ci>=0)city=block[ci];
+  const cm=block.join(' ').match(/(?:CEP\s*[:\-]?\s*)?(\d{5}[-.]?\d{3})\b/i);if(cm)cep=cm[1];
+ }
+ if(address==='—'){const ai=lines.findIndex(l=>streetRx.test(l));if(ai>=0)address=lines.slice(ai,ai+2).filter(l=>!/bairro|cep/i.test(l)).join(', ')}
+ if(rem>=0){let block=[];for(let i=rem+1;i<Math.min(lines.length,rem+7);i++){if(i!==rem+1&&isHeader(lines[i]))break;block.push(lines[i])}sender=block[0]||'—';const cm=block.join(' ').match(/(?:CEP\s*[:\-]?\s*)?(\d{5}[-.]?\d{3})\b/i);if(cm)senderCep=cm[1]}
+ const validCodes=[...foundCodes.keys()].filter(v=>/^[A-Z]{2}\d{9,14}[A-Z]{0,2}$/i.test(v.replace(/\s/g,'')));
+ let tracking=validCodes[0]||'—';if(tracking==='—'){const tm=all.match(/\b[A-Z]{2}\d{9,14}[A-Z]{1,2}\b/i);if(tm)tracking=tm[0]}
+ const nf=(all.match(/\bNF\s*[:#-]?\s*(\d{3,12})/i)||[])[1]||'—';
+ const series=(all.match(/s[eé]rie\s*[:#-]?\s*([A-Z0-9.-]+)/i)||[])[1]||'—';
+ const digitRuns=(all.match(/\b\d{30,50}\b/g)||[]).sort((a,b)=>b.length-a.length),danfe=digitRuns[0]||'—';
+ const sku=(all.match(/\bSKU\s*[:#-]?\s*([^\n]+)/i)||[])[1]||'—';
+ const issue=(all.match(/emiss[aã]o\s*[:#-]?\s*(\d{1,2}[-\/]\d{1,2}[-\/]\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)/i)||[])[1]||'—';
+ const forecast=(all.match(/envio\s+previsto\s*[:#-]?\s*(\d{1,2}[-\/]\d{1,2}[-\/]\d{4})/i)||[])[1]||'—';
+ return{recipient,address,district,city,cep,tracking,sender,senderCep,nf,series,danfe,sku,issue,forecast,raw:all}
+}
 async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='LENDO...';setStatus('Lendo texto');try{const max=1800,scale=Math.min(1,max/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const ctx=canvas.getContext('2d');ctx.drawImage(video,0,0,canvas.width,canvas.height);const img=ctx.getImageData(0,0,canvas.width,canvas.height);for(let i=0;i<img.data.length;i+=4){const g=.299*img.data[i]+.587*img.data[i+1]+.114*img.data[i+2];const v=g>155?255:g<75?0:g;img.data[i]=img.data[i+1]=img.data[i+2]=v}ctx.putImageData(img,0,0);const res=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*100)+'%'}});const p=parseLabel(res.data.text);try{if(window.ZXing){const reader=new ZXing.BrowserMultiFormatReader();const result=await reader.decodeFromImage(undefined,canvas.toDataURL('image/jpeg',.92));if(result)addCode(result.getText(),result.getBarcodeFormat?ZXing.BarcodeFormat[result.getBarcodeFormat()]:'código')} }catch(e){} $('#recipient').textContent=p.recipient;$('#address').textContent=p.address;$('#district').textContent=p.district;$('#city').textContent=p.city;$('#cep').textContent=p.cep;$('#tracking').textContent=p.tracking;$('#sender').textContent=p.sender;$('#senderCep').textContent=p.senderCep;$('#nf').textContent=p.nf;$('#series').textContent=p.series;$('#danfe').textContent=p.danfe;$('#sku').textContent=p.sku;$('#issueDate').textContent=p.issue;$('#forecast').textContent=p.forecast;$('#rawText').textContent=p.raw||'Nenhum texto reconhecido.';ocrState.textContent='CONCLUÍDO';setStatus('Dados lidos')}catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer esta etiqueta. Tente aproximar, melhorar a luz e manter a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
 start.onclick=begin;stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};manualForm.onsubmit=e=>{e.preventDefault();const v=manualValue.value.trim();if(v){showResult(v,'manual');manualValue.value=''}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
