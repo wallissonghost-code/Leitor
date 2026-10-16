@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s),video=$('#video'),start=$('#start'),stop=$('#stop'),ocr=$('#ocr'),statusEl=$('#status'),empty=$('#empty'),data=$('#data'),formatEl=$('#format'),valueEl=$('#value'),timeEl=$('#time'),copy=$('#copy'),person=$('#person'),ocrState=$('#ocrState'),canvas=$('#capture'),snapshot=$('#snapshot');
-let stream=null,nativeDetector=null,zxingReader=null,running=false,lastValue='',lastAt=0,raf=0,ocrBusy=false;const foundCodes=new Map();
+let stream=null,nativeDetector=null,zxingReader=null,running=false,lastValue='',lastAt=0,raf=0,ocrBusy=false,currentCaptureId=null,currentCaptureBlob=null,editing=false;const foundCodes=new Map();
 function setStatus(t){statusEl.textContent=t}
 function renderCodes(){const panel=$('#codesPanel'),list=$('#codesList'),count=$('#codesCount');if(!panel||!list)return;panel.hidden=false;const arr=[...foundCodes.values()];count.textContent=String(arr.length);list.innerHTML=arr.length?arr.map((c,i)=>'<div class="code-row"><span>CÓDIGO '+(i+1)+' · '+escapeHtml(c.format)+'</span><strong>'+escapeHtml(c.value)+'</strong></div>').join(''):'<div class="empty">Nenhum código detectado ainda.</div>'}
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -80,27 +80,34 @@ function extractDeliveryCore(text,p={}){
  return{city,complement};
 }
 
-async function saveLocalCapture(blob){try{const db=await new Promise((ok,no)=>{const r=indexedDB.open('leitor-etiquetas',1);r.onupgradeneeded=()=>r.result.createObjectStore('capturas',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});const tx=db.transaction('capturas','readwrite');tx.objectStore('capturas').put({id:Date.now(),createdAt:new Date().toISOString(),image:blob});return true}catch(e){console.warn('Falha ao salvar localmente',e);return false}}
-async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='CAPTURANDO';setStatus('Capturando foto');try{
+async function saveLocalCapture(blob){try{const db=await new Promise((ok,no)=>{const r=indexedDB.open('leitor-etiquetas',1);r.onupgradeneeded=()=>r.result.createObjectStore('capturas',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});const tx=db.transaction('capturas','readwrite');const id=Date.now();tx.objectStore('capturas').put({id,createdAt:new Date().toISOString(),image:blob});currentCaptureId=id;currentCaptureBlob=blob;return true}catch(e){console.warn('Falha ao salvar localmente',e);return false}}
+
+function setProgress(v,label='Analisando etiqueta'){const card=$('#progressCard'),bar=$('#progressBar'),value=$('#progressValue'),lab=$('#progressLabel');card.hidden=false;const n=Math.max(0,Math.min(100,Math.round(v)));bar.style.width=n+'%';value.textContent=n+'%';lab.textContent=label}
+async function deleteCurrentCapture(){if(currentCaptureId==null)return;try{const db=await new Promise((ok,no)=>{const r=indexedDB.open('leitor-etiquetas',1);r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});const tx=db.transaction('capturas','readwrite');tx.objectStore('capturas').delete(currentCaptureId)}catch(e){console.warn(e)}currentCaptureId=null;currentCaptureBlob=null}
+function setEditable(on){editing=on;['#recipientInput','#cityInput','#complementInput'].forEach(s=>$(s).readOnly=!on);$('#editData').textContent=on?'Cancelar edição':'Corrigir';$('#confirmData').textContent=on?'✓ Salvar e confirmar':'✓ Confirmar'}
+async function resetCycle(){await deleteCurrentCapture();foundCodes.clear();lastValue='';lastAt=0;person.hidden=true;$('#captureInfo').hidden=true;$('#codesPanel').hidden=true;$('#progressCard').hidden=true;data.hidden=true;empty.hidden=false;snapshot.hidden=true;video.hidden=false;['#recipientInput','#cityInput','#complementInput'].forEach(s=>$(s).value='');setEditable(false);setStatus('Pronto para próxima');if(!running)await begin()}
+async function confirmCurrent(){const payload={name:$('#recipientInput').value.trim(),city:$('#cityInput').value.trim(),apartment:$('#complementInput').value.trim(),image:currentCaptureBlob};if(!payload.name||!payload.apartment){setStatus('Confira nome e complemento');return}/* PONTO DE INTEGRAÇÃO: enviar payload ao sistema terceiro antes de apagar a foto. */setStatus('Confirmado');ocrState.textContent='CONFIRMADO';setProgress(100,'Dados confirmados');setTimeout(resetCycle,650)}
+
+async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='CAPTURANDO';setStatus('Capturando foto');setProgress(1,'Foto capturada');try{
  const max=2600,scale=Math.min(1,max/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const ctx=canvas.getContext('2d');ctx.drawImage(video,0,0,canvas.width,canvas.height);
- const blob=await new Promise(ok=>canvas.toBlob(ok,'image/jpeg',.94));snapshot.src=URL.createObjectURL(blob);snapshot.hidden=false;video.hidden=true;$('#captureInfo').hidden=false;$('#captureTime').textContent='Capturada em '+new Date().toLocaleString('pt-BR');await saveLocalCapture(blob);ocrState.textContent='LENDO...';setStatus('Localizando destinatário');
- const full=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*45)+'%'}});
+ const blob=await new Promise(ok=>canvas.toBlob(ok,'image/jpeg',.94));snapshot.src=URL.createObjectURL(blob);snapshot.hidden=false;video.hidden=true;$('#captureInfo').hidden=false;$('#captureTime').textContent='Capturada em '+new Date().toLocaleString('pt-BR');await saveLocalCapture(blob);ocrState.textContent='LENDO...';setStatus('Localizando destinatário');setProgress(5,'Analisando etiqueta');
+ const full=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*45)+'%';setProgress(5+(m.progress||0)*40,'Analisando etiqueta')}});
  let text=full.data.text||'',cropText='';
  const words=full.data.words||[];const marker=words.find(w=>/destinat/i.test(w.text||''));
  const crop=document.createElement('canvas');crop.width=canvas.width;
  let y0=0,h=Math.round(canvas.height*.38);
  if(marker&&marker.bbox){y0=Math.max(0,marker.bbox.y0-35);h=Math.min(canvas.height-y0,Math.max(320,canvas.height*.30))}
  crop.height=h;const cctx=crop.getContext('2d');cctx.drawImage(canvas,0,y0,canvas.width,h,0,0,canvas.width,h);
- const focused=await Tesseract.recognize(crop,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=45+Math.round((m.progress||0)*55)+'%'}});
+ const focused=await Tesseract.recognize(crop,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=45+Math.round((m.progress||0)*55)+'%';setProgress(45+(m.progress||0)*50,'Lendo destinatário')}});
  cropText=focused.data.text||'';
  let p=parseLabel(cropText);const score=x=>[x.recipient,x.address,x.district,x.city,x.cep].filter(v=>v&&v!=='—').length;
  const fullParsed=parseLabel(text);if(score(fullParsed)>score(p))p=fullParsed;
  const spatial=spatialRecipient(full);if(spatial){const merged={...p};for(const k of ['recipient','address','district','city','cep'])if(spatial[k]&&spatial[k]!=='—')merged[k]=spatial[k];p=merged}
  const core=extractDeliveryCore((cropText||'')+'\n'+(text||''),p);
- $('#recipient').textContent=p.recipient;$('#city').textContent=core.city;$('#complement').textContent=core.complement;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
+ $('#recipientInput').value=p.recipient==='—'?'':p.recipient;$('#cityInput').value=core.city==='—'?'':core.city;$('#complementInput').value=core.complement==='—'?'':core.complement;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
  const found=[p.recipient,core.city,core.complement].filter(v=>v&&v!=='—').length;
- if(found){ocrState.textContent='CONCLUÍDO';setStatus('Destinatário lido')}else{ocrState.textContent='NÃO IDENTIFICADO';setStatus('Tente aproximar a etiqueta')}
+ if(found){setProgress(100,'Análise concluída');ocrState.textContent='CONFIRA';setStatus('Aguardando confirmação')}else{ocrState.textContent='NÃO IDENTIFICADO';setStatus('Tente aproximar a etiqueta')}
  }catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer o destinatário. Tente enquadrar a etiqueta inteira, com boa luz e a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
-start.onclick=async()=>{snapshot.hidden=true;video.hidden=false;await begin()};stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
+$('#confirmData').onclick=confirmCurrent;$('#editData').onclick=()=>setEditable(!editing);start.onclick=async()=>{snapshot.hidden=true;video.hidden=false;await begin()};stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
 // iOS: impede zoom por duplo toque, pinça e gestos de escala do Safari.
 let lastTouchEnd=0;document.addEventListener('touchend',e=>{const now=Date.now();if(now-lastTouchEnd<=300)e.preventDefault();lastTouchEnd=now},{passive:false});document.addEventListener('touchmove',e=>{if(e.touches&&e.touches.length>1)e.preventDefault()},{passive:false});['gesturestart','gesturechange','gestureend'].forEach(type=>document.addEventListener(type,e=>e.preventDefault(),{passive:false}));
