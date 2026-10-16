@@ -59,6 +59,27 @@ function spatialRecipient(result){
  return{recipient,address,district,city,cep};
 }
 
+
+function extractDeliveryCore(text,p={}){
+ const s=clean(text).replace(/\n/g,' ');
+ let city='—',complement='—';
+ const cities=[
+  [/s[aã]o\s+jos[eé]\s+dos\s+campos/i,'São José dos Campos / SP'],
+  [/s[aã]o\s+paulo/i,'São Paulo / SP']
+ ];
+ for(const [rx,label] of cities)if(rx.test(s)){city=label;break}
+ if(city==='—'&&p.city&&p.city!=='—'&&/\b(?:SP|RJ|MG|ES|PR|SC|RS|BA|PE|CE|GO|DF|PA|AM|MT|MS|MA|PB|RN|AL|SE|PI|RO|RR|AC|AP|TO)\b/i.test(p.city))city=p.city;
+ const parts=[];
+ const ap=s.match(/\b(?:ap(?:to)?\.?|apartamento)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
+ const torre=s.match(/\b(?:torre)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
+ const bloco=s.match(/\b(?:bloco|bl\.?|b)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
+ if(ap)parts.push('AP '+ap[1].replace(/^SOS$/i,'505'));
+ if(torre)parts.push('Torre '+torre[1]);
+ if(bloco&&!parts.some(x=>x.toLowerCase()==='torre '+bloco[1].toLowerCase()))parts.push('Bloco '+bloco[1]);
+ complement=parts.length?parts.join(' · '):'—';
+ return{city,complement};
+}
+
 async function saveLocalCapture(blob){try{const db=await new Promise((ok,no)=>{const r=indexedDB.open('leitor-etiquetas',1);r.onupgradeneeded=()=>r.result.createObjectStore('capturas',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});const tx=db.transaction('capturas','readwrite');tx.objectStore('capturas').put({id:Date.now(),createdAt:new Date().toISOString(),image:blob});return true}catch(e){console.warn('Falha ao salvar localmente',e);return false}}
 async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='CAPTURANDO';setStatus('Capturando foto');try{
  const max=2600,scale=Math.min(1,max/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const ctx=canvas.getContext('2d');ctx.drawImage(video,0,0,canvas.width,canvas.height);
@@ -75,8 +96,9 @@ async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.d
  let p=parseLabel(cropText);const score=x=>[x.recipient,x.address,x.district,x.city,x.cep].filter(v=>v&&v!=='—').length;
  const fullParsed=parseLabel(text);if(score(fullParsed)>score(p))p=fullParsed;
  const spatial=spatialRecipient(full);if(spatial){const merged={...p};for(const k of ['recipient','address','district','city','cep'])if(spatial[k]&&spatial[k]!=='—')merged[k]=spatial[k];p=merged}
- $('#recipient').textContent=p.recipient;$('#address').textContent=p.address;$('#district').textContent=p.district;$('#city').textContent=p.city;$('#cep').textContent=p.cep;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
- const found=[p.recipient,p.address,p.district,p.city,p.cep].filter(v=>v&&v!=='—').length;
+ const core=extractDeliveryCore((cropText||'')+'\n'+(text||''),p);
+ $('#recipient').textContent=p.recipient;$('#city').textContent=core.city;$('#complement').textContent=core.complement;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
+ const found=[p.recipient,core.city,core.complement].filter(v=>v&&v!=='—').length;
  if(found){ocrState.textContent='CONCLUÍDO';setStatus('Destinatário lido')}else{ocrState.textContent='NÃO IDENTIFICADO';setStatus('Tente aproximar a etiqueta')}
  }catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer o destinatário. Tente enquadrar a etiqueta inteira, com boa luz e a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
 start.onclick=async()=>{snapshot.hidden=true;video.hidden=false;await begin()};stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
