@@ -61,23 +61,28 @@ function spatialRecipient(result){
 
 
 function extractDeliveryCore(text,p={}){
- const s=clean(text).replace(/\n/g,' ');
- let city='—',complement='—';
- const cities=[
-  [/s[aã]o\s+jos[eé]\s+dos\s+campos/i,'São José dos Campos / SP'],
-  [/s[aã]o\s+paulo/i,'São Paulo / SP']
- ];
+ const s=clean(text).replace(/\n/g,' ');let city='—',complement='—';
+ const cities=[[/s[aã]o\s+jos[eé]\s+dos\s+campos/i,'São José dos Campos / SP'],[/s[aã]o\s+paulo/i,'São Paulo / SP']];
  for(const [rx,label] of cities)if(rx.test(s)){city=label;break}
  if(city==='—'&&p.city&&p.city!=='—'&&/\b(?:SP|RJ|MG|ES|PR|SC|RS|BA|PE|CE|GO|DF|PA|AM|MT|MS|MA|PB|RN|AL|SE|PI|RO|RR|AC|AP|TO)\b/i.test(p.city))city=p.city;
- const parts=[];
- const ap=s.match(/\b(?:ap(?:to)?\.?|apartamento)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
- const torre=s.match(/\b(?:torre)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
- const bloco=s.match(/\b(?:bloco|bl\.?|b)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
- if(ap)parts.push('AP '+ap[1].replace(/^SOS$/i,'505'));
- if(torre)parts.push('Torre '+torre[1]);
- if(bloco&&!parts.some(x=>x.toLowerCase()==='torre '+bloco[1].toLowerCase()))parts.push('Bloco '+bloco[1]);
- complement=parts.length?parts.join(' · '):'—';
- return{city,complement};
+ const parts=[],valid=v=>/^(?=.*\d)[A-Z0-9-]{1,8}$/i.test(v||'');
+ const ap=s.match(/\b(?:ap(?:to)?\.?|apartamento)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i),torre=s.match(/\btorre\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i),bloco=s.match(/\b(?:bloco|bl\.?)\s*[-:#]?\s*([A-Z0-9-]{1,8})\b/i);
+ if(ap&&valid(ap[1]))parts.push('AP '+ap[1].replace(/^SOS$/i,'505'));
+ if(torre&&valid(torre[1]))parts.push('Torre '+torre[1]);
+ if(bloco&&valid(bloco[1]))parts.push('Bloco '+bloco[1]);
+ complement=parts.length?parts.join(' · '):'—';return{city,complement};
+}
+
+function focusedRecipient(result){
+ const ws=(result?.data?.words||[]).filter(w=>w?.bbox&&clean(w.text).length);if(!ws.length)return null;
+ const marker=ws.find(w=>/destinat/i.test(w.text||''));if(!marker)return null;
+ const my=(marker.bbox.y0+marker.bbox.y1)/2,mh=Math.max(10,marker.bbox.y1-marker.bbox.y0);
+ const below=ws.filter(w=>{const cy=(w.bbox.y0+w.bbox.y1)/2;return cy>my+mh*.55&&cy<my+mh*2.3});
+ const rows=[];for(const w of below){const cy=(w.bbox.y0+w.bbox.y1)/2;let r=rows.find(x=>Math.abs(x.y-cy)<Math.max(7,mh*.55));if(!r){r={y:cy,words:[]};rows.push(r)}r.words.push(w)}
+ const lines=rows.sort((a,b)=>a.y-b.y).map(r=>clean(r.words.sort((a,b)=>a.bbox.x0-b.bbox.x0).map(w=>w.text).join(' '))).filter(Boolean);
+ const bad=/\b(avenida|rua|av\.?|travessa|alameda|rodovia|estrada|bairro|corredor|gaiola|coleta|shopee)\b/i;
+ const name=lines.find(l=>!bad.test(l)&&!/[0-9]{3,}/.test(l)&&l.split(/\s+/).length>=2);
+ return name||null;
 }
 
 async function saveLocalCapture(blob){try{const db=await new Promise((ok,no)=>{const r=indexedDB.open('leitor-etiquetas',1);r.onupgradeneeded=()=>r.result.createObjectStore('capturas',{keyPath:'id'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});const tx=db.transaction('capturas','readwrite');const id=Date.now();tx.objectStore('capturas').put({id,createdAt:new Date().toISOString(),image:blob});currentCaptureId=id;currentCaptureBlob=blob;return true}catch(e){console.warn('Falha ao salvar localmente',e);return false}}
@@ -91,23 +96,26 @@ async function confirmCurrent(){const payload={name:$('#recipientInput').value.t
 async function readOCR(){if(ocrBusy||!video.videoWidth)return;ocrBusy=true;ocr.disabled=true;person.hidden=false;ocrState.textContent='CAPTURANDO';setStatus('Capturando foto');setProgress(1,'Foto capturada');try{
  const max=2600,scale=Math.min(1,max/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);const ctx=canvas.getContext('2d');ctx.drawImage(video,0,0,canvas.width,canvas.height);
  const blob=await new Promise(ok=>canvas.toBlob(ok,'image/jpeg',.94));snapshot.src=URL.createObjectURL(blob);snapshot.hidden=false;video.hidden=true;$('#captureInfo').hidden=false;$('#captureTime').textContent='Capturada em '+new Date().toLocaleString('pt-BR');await saveLocalCapture(blob);ocrState.textContent='LENDO...';setStatus('Localizando destinatário');setProgress(5,'Analisando etiqueta');
- const full=await Tesseract.recognize(canvas,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*45)+'%';setProgress(5+(m.progress||0)*40,'Analisando etiqueta')}});
+ const guide={x:.09,y:.12,w:.82,h:.72};
+ const roi=document.createElement('canvas'),rx=Math.round(canvas.width*guide.x),ry=Math.round(canvas.height*guide.y),rw=Math.round(canvas.width*guide.w),rh=Math.round(canvas.height*guide.h);roi.width=rw;roi.height=rh;roi.getContext('2d').drawImage(canvas,rx,ry,rw,rh,0,0,rw,rh);
+ const full=await Tesseract.recognize(roi,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=Math.round((m.progress||0)*45)+'%';setProgress(5+(m.progress||0)*40,'Analisando etiqueta')}});
  let text=full.data.text||'',cropText='';
  const words=full.data.words||[];const marker=words.find(w=>/destinat/i.test(w.text||''));
- const crop=document.createElement('canvas');crop.width=canvas.width;
- let y0=0,h=Math.round(canvas.height*.38);
- if(marker&&marker.bbox){y0=Math.max(0,marker.bbox.y0-35);h=Math.min(canvas.height-y0,Math.max(320,canvas.height*.30))}
- crop.height=h;const cctx=crop.getContext('2d');cctx.drawImage(canvas,0,y0,canvas.width,h,0,0,canvas.width,h);
+ const crop=document.createElement('canvas');crop.width=roi.width;
+ let y0=0,h=Math.round(roi.height*.55);
+ if(marker&&marker.bbox){y0=Math.max(0,marker.bbox.y0-35);h=Math.min(roi.height-y0,Math.max(240,roi.height*.48))}
+ crop.height=h;const cctx=crop.getContext('2d');cctx.drawImage(roi,0,y0,roi.width,h,0,0,roi.width,h);
  const focused=await Tesseract.recognize(crop,'por',{logger:m=>{if(m.status==='recognizing text')ocrState.textContent=45+Math.round((m.progress||0)*55)+'%';setProgress(45+(m.progress||0)*50,'Lendo destinatário')}});
  cropText=focused.data.text||'';
  let p=parseLabel(cropText);const score=x=>[x.recipient,x.address,x.district,x.city,x.cep].filter(v=>v&&v!=='—').length;
  const fullParsed=parseLabel(text);if(score(fullParsed)>score(p))p=fullParsed;
  const spatial=spatialRecipient(full);if(spatial){const merged={...p};for(const k of ['recipient','address','district','city','cep'])if(spatial[k]&&spatial[k]!=='—')merged[k]=spatial[k];p=merged}
+ const preciseName=focusedRecipient(full);if(preciseName)p.recipient=preciseName;
  const core=extractDeliveryCore((cropText||'')+'\n'+(text||''),p);
  $('#recipientInput').value=p.recipient==='—'?'':p.recipient;$('#cityInput').value=core.city==='—'?'':core.city;$('#complementInput').value=core.complement==='—'?'':core.complement;$('#rawText').textContent='LEITURA FOCADA:\n'+(cropText||'—')+'\n\nLEITURA COMPLETA:\n'+(text||'—');
  const found=[p.recipient,core.city,core.complement].filter(v=>v&&v!=='—').length;
  if(found){setProgress(100,'Análise concluída');ocrState.textContent='CONFIRA';setStatus('Aguardando confirmação')}else{ocrState.textContent='NÃO IDENTIFICADO';setStatus('Tente aproximar a etiqueta')}
- }catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer o destinatário. Tente enquadrar a etiqueta inteira, com boa luz e a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
+ }catch(e){console.error(e);ocrState.textContent='ERRO';setStatus('Falha no OCR');$('#rawText').textContent='Não foi possível reconhecer o destinatário. Enquadre DESTINATÁRIO + AP/TORRE/BLOCO, com boa luz e a câmera reta.'}finally{ocrBusy=false;ocr.disabled=!running}}
 $('#confirmData').onclick=confirmCurrent;$('#editData').onclick=()=>setEditable(!editing);start.onclick=async()=>{snapshot.hidden=true;video.hidden=false;await begin()};stop.onclick=end;ocr.onclick=readOCR;copy.onclick=async()=>{if(lastValue){await navigator.clipboard.writeText(lastValue);copy.textContent='Copiado';setTimeout(()=>copy.textContent='Copiar',1200)}};document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)end()});
 // iOS: impede zoom por duplo toque, pinça e gestos de escala do Safari.
 let lastTouchEnd=0;document.addEventListener('touchend',e=>{const now=Date.now();if(now-lastTouchEnd<=300)e.preventDefault();lastTouchEnd=now},{passive:false});document.addEventListener('touchmove',e=>{if(e.touches&&e.touches.length>1)e.preventDefault()},{passive:false});['gesturestart','gesturechange','gestureend'].forEach(type=>document.addEventListener(type,e=>e.preventDefault(),{passive:false}));
