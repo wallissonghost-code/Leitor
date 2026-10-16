@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <title>Leitor de Etiquetas</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header><div><span class="eyebrow">LEITOR MOBILE</span><h1>Escanear etiqueta</h1></div><span id="status" class="status">Pronto</span></header>
+    <section class="scanner">
+      <video id="video" playsinline muted></video>
+      <div class="shade"></div><div class="target"><i></i><i></i><i></i><i></i></div>
+      <p id="hint">Posicione o código dentro da área</p>
+    </section>
+    <div class="actions">
+      <button id="start">Abrir câmera</button>
+      <button id="stop" class="secondary" disabled>Parar</button>
+    </div>
+    <section class="result">
+      <div class="result-head"><h2>Última leitura</h2><button id="copy" class="text-btn" disabled>Copiar</button></div>
+      <div id="empty" class="empty">Nenhum código lido ainda.</div>
+      <div id="data" hidden><span id="format" class="chip"></span><p id="value"></p><small id="time"></small></div>
+    </section>
+    <section class="manual">
+      <h2>Teste manual</h2><p>Se a câmera não reconhecer a etiqueta, digite o código para testar o fluxo.</p>
+      <form id="manualForm"><input id="manualValue" placeholder="Código da encomenda" autocomplete="off"><button>Registrar</button></form>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
